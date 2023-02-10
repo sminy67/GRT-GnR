@@ -3,6 +3,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 from scipy.sparse import coo_matrix, csr_matrix
+from utils.utils import factorize_shapes
 
 def load_data(args):
     
@@ -28,6 +29,10 @@ def load_data(args):
     data = data[['user_id', 'item_id', 'rating']]
     data = data.drop_duplicates()
     data = data.sort_values(by='user_id', ascending=True)
+    
+    row_shapes = factorize_shapes(n=num_items, d=3)
+    emb_shapes = factorize_shapes(n=args.emb_dims, d=3)
+    args.group_size = row_shapes[-1]
 
     row = data.user_id.values
     col = data.item_id.values
@@ -36,7 +41,14 @@ def load_data(args):
     sparse_data = coo_matrix((val, (row, col)), shape=(num_users, num_items)).tocsr()
     indices = sparse_data.indices
     offsets = sparse_data.indptr
-    import pdb; pdb.set_trace()
+    
+    if args.use_group_alg:
+        if args.alg_name == "random":
+            indices = random_indices(indices, num_items)
+        elif args.alg_name == "sort":
+            indices = sort_indices(indices, num_items)
+        elif args.alg_name =="optim":
+            raise NotImplementedError
 
     dataset = RecDataset(torch.tensor(offsets, dtype=torch.long), torch.tensor(indices, dtype=torch.long), args)
 
@@ -45,7 +57,23 @@ def load_data(args):
     else:
         dataloader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_fn, shuffle=False)
         
-    return dataloader, num_items
+    return dataloader, num_items, row_shapes, emb_shapes
+
+def random_indices(indices, num_items):
+    rand_arr = np.arange(num_items)
+    np.random.shuffle(rand_arr)
+    rand_indices = rand_arr[indices]
+
+    return rand_indices
+
+def sort_indices(indices, num_items):
+    item_idx, cnts = np.unique(indices, return_counts=True)
+    idx = np.argsort(-cnts)
+    sort_arr = np.zeros_like(idx)
+    sort_arr[idx] = np.arange(idx.size)
+    sort_indices = sort_arr[indices]
+    
+    return sort_indices
 
 def collate_fn(datas):
     offsets = datas[0]["offsets"]
@@ -89,12 +117,12 @@ class RecDataset(Dataset):
             self.group_size = args.group_size
         
     def __len__(self):
-        return len(self.offsets)
+        return len(self.offsets) - 1
     
     def __getitem__(self, idx):
-
-        offsets = self.offsets[idx : idx + 2]
+        
         indices = self.indices[self.offsets[idx] : self.offsets[idx+1]]
+        offsets = torch.tensor([0, len(indices)])
 
         instance = dict()
         if self.grouping:
