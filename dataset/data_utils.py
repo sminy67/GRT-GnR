@@ -4,6 +4,8 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from scipy.sparse import coo_matrix, csr_matrix
 from utils.utils import factorize_shapes
+from .grouping.optimize import optim_indices
+import seaborn as sns
 
 def load_data(args):
     
@@ -41,14 +43,17 @@ def load_data(args):
     sparse_data = coo_matrix((val, (row, col)), shape=(num_users, num_items)).tocsr()
     indices = sparse_data.indices
     offsets = sparse_data.indptr
+
+    if args.analyze_data:
+        return indices, offsets, num_items, num_users
     
     if args.use_group_alg:
         if args.alg_name == "random":
             indices = random_indices(indices, num_items)
         elif args.alg_name == "sort":
             indices = sort_indices(indices, num_items)
-        elif args.alg_name =="optim":
-            raise NotImplementedError
+        elif args.alg_name == "optim":
+            indices = optim_indices(sparse_data, args.group_size, args)
 
     dataset = RecDataset(torch.tensor(offsets, dtype=torch.long), torch.tensor(indices, dtype=torch.long), args)
 
@@ -58,6 +63,37 @@ def load_data(args):
         dataloader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_fn, shuffle=False)
         
     return dataloader, num_items, row_shapes, emb_shapes
+
+def count_cached_item_access(indices, num_items, args):
+    _, acc_cnts = np.unique(indices, return_counts=True)
+    
+    sorted_acc_cnts = np.sort(acc_cnts)[::-1]
+    total_acc = indices.shape[0]
+    cached_num_items = int(num_items * args.cache_size // 100)
+
+    num_cache_acc = sorted_acc_cnts[:cached_num_items].sum()
+
+    per_cached_item_acc = np.round(num_cache_acc / total_acc, decimals=4) * 100
+
+    print(f"Number of items : {num_items} in Dataset : {args.data_name}")
+    print(f"Cache Size : {args.cache_size}, Percentage of cached item access : {per_cached_item_acc}")
+
+def count_item_access(indices, num_items, args):
+    _, acc_cnts = np.unique(indices, return_counts=True)
+    num_acc_cnts, num_item_cnts = np.unique(acc_cnts, return_counts=True)
+
+    total_acc = indices.shape[0]
+    anu_idx = total_acc // num_items
+    
+    num_access = num_acc_cnts * num_item_cnts
+    anu_access = (num_access[:3].sum() / num_access.sum()) * 100
+    percent = np.round(anu_access, decimals=2)
+
+    anu_items = (num_item_cnts[:3].sum() / num_items) * 100
+    percent_item = np.round(anu_items, decimals=2)
+
+    print(f"ANU : {anu_idx}, Number of access <= ANU : {percent} in Dataset : {args.data_name}")
+    print(f"Number of Items <= ANU : {percent_item}")
 
 def random_indices(indices, num_items):
     rand_arr = np.arange(num_items)
