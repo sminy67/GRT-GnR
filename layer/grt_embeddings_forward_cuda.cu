@@ -337,7 +337,8 @@ Tensor grt_embeddings_forward_cuda(
     Tensor intra_group_offsets,
     Tensor inter_group_indices,
     Tensor inter_group_offsets,
-    const std::vector<Tensor>& tt_cores
+    const std::vector<Tensor>& tt_cores,
+    Tensor output
 ) {
     at::cuda::OptionalCUDAGuard device_guard;
     device_guard.set_index(intra_group_indices.get_device());
@@ -348,7 +349,6 @@ Tensor grt_embeddings_forward_cuda(
     int32_t num_cores = row_shapes.size();
     int32_t inter_group_nnz = num_group_bags;
 
-    auto output = at::zeros({num_bags, emb_dims}, tt_cores[0].options().dtype(at::kFloat));
     if (intra_group_nnz == 0) {
         return output;
     }
@@ -467,7 +467,8 @@ Tensor tt_embeddings_forward_cuda(
     int32_t nnz,
     Tensor indices,
     Tensor offsets,
-    const std::vector<Tensor>& tt_cores
+    const std::vector<Tensor>& tt_cores,
+    Tensor output
 ) {
     at::cuda::OptionalCUDAGuard device_guard;
     device_guard.set_index(indices.get_device());
@@ -475,7 +476,6 @@ Tensor tt_embeddings_forward_cuda(
 
     int32_t num_cores = row_shapes.size();
 
-    auto output = at::zeros({num_bags, emb_dims}, tt_cores[0].options().dtype(at::kFloat));
     if (nnz == 0) {
         return output;
     }

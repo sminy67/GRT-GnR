@@ -23,7 +23,8 @@ Tensor grt_embeddings_forward_cuda(
     Tensor intra_group_offsets,
     Tensor inter_group_indices,
     Tensor inter_group_offsets,
-    const std::vector<Tensor>& tt_cores);
+    const std::vector<Tensor>& tt_cores,
+    Tensor output);
 
 Tensor tt_embeddings_forward_cuda(
     int32_t num_bags,
@@ -35,7 +36,8 @@ Tensor tt_embeddings_forward_cuda(
     int32_t nnz,
     Tensor indices,
     Tensor offsets,
-    const std::vector<Tensor>& tt_cores);
+    const std::vector<Tensor>& tt_cores,
+    Tensor output);
 
 PYBIND11_MODULE(grt_embeddings_forward, m) {
   m.def("grt_forward", &grt_embeddings_forward_cuda, "grt_forward()");

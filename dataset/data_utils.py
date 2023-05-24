@@ -52,12 +52,15 @@ def load_data(args):
 
     if args.analyze_data:
         return indices, offsets, num_items, num_users
+
+    cache_size = int(args.cache_size * num_items)
+    cache = gen_cache(indices, cache_size)
     
     if args.use_group_alg:
         if args.alg_name == "random":
-            indices = random_indices(indices, num_items)
+            indices, cache = random_indices(indices, cache, num_items)
         elif args.alg_name == "sort":
-            indices = sort_indices(indices, num_items)
+            indices, cache = sort_indices(indices, cache, num_items)
         elif args.alg_name == "optim":
             optim_name = f"/home/sminyu/rec_sys/GRT-GnR/dataset/grouping/optim_data/{args.data_name}.npy"
             if os.path.exists(optim_name):
@@ -66,14 +69,23 @@ def load_data(args):
             else:
                 indices = optim_indices(indices, sparse_data, args.group_size, args)
 
-    dataset = RecDataset(torch.tensor(offsets, dtype=torch.long), torch.tensor(indices, dtype=torch.long), args)
+    dataset = RecDataset(torch.tensor(offsets, dtype=torch.long), torch.tensor(indices, dtype=torch.long),
+                         torch.tensor(cache, dtype=torch.long), args)
 
     if args.grouping:
         dataloader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=grouped_collate_fn, shuffle=False)
     else:
         dataloader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_fn, shuffle=False)
         
-    return dataloader, num_items, row_shapes, emb_shapes
+    return dataloader, num_items, row_shapes, emb_shapes, cache_size
+
+def gen_cache(indices, cache_size):
+    _, acc_cnts = np.unique(indices, return_counts=True)
+    
+    sorted_indices = np.argsort(acc_cnts)[::-1]
+    cache = sorted_indices[:cache_size]
+
+    return cache
 
 def count_cached_item_access(indices, num_items, args):
     _, acc_cnts = np.unique(indices, return_counts=True)
@@ -106,21 +118,23 @@ def count_item_access(indices, num_items, args):
     print(f"ANU : {anu_idx}, Number of access <= ANU : {percent} in Dataset : {args.data_name}")
     print(f"Number of Items <= ANU : {percent_item}")
 
-def random_indices(indices, num_items):
+def random_indices(indices, cache, num_items):
     rand_arr = np.arange(num_items)
     np.random.shuffle(rand_arr)
     rand_indices = rand_arr[indices]
+    rand_cache = rand_arr[cache]
 
-    return rand_indices
+    return rand_indices, rand_cache
 
-def sort_indices(indices, num_items):
+def sort_indices(indices, cache, num_items):
     item_idx, cnts = np.unique(indices, return_counts=True)
     idx = np.argsort(-cnts)
     sort_arr = np.zeros_like(idx)
     sort_arr[idx] = np.arange(idx.size)
     sort_indices = sort_arr[indices]
+    sort_cache = sort_arr[cache]
     
-    return sort_indices
+    return sort_indices, sort_cache
 
 def optimize_indices(indices, idx):
 
@@ -134,12 +148,19 @@ def collate_fn(datas):
     offsets = datas[0]["offsets"]
     indices = datas[0]["indices"]
     
+    cached_offsets = datas[0]["cached_offsets"]
+    cached_indices = datas[0]["cached_indices"]
+    
     for data in datas[1:]:
         offset_idx = data["offsets"][1] - data["offsets"][0] + offsets[-1]
         offsets = torch.cat((offsets, torch.tensor([offset_idx], dtype=torch.long)))
         indices = torch.cat((indices, data["indices"]))
+        
+        cached_offset_idx = data["cached_offsets"][1] - data["cached_offsets"][0] + cached_offsets[-1]
+        cached_offsets = torch.cat((cached_offsets, torch.tensor([cached_offset_idx], dtype=torch.long)))
+        cached_indices = torch.cat((cached_indices, data["cached_indices"]))
 
-    return offsets, indices 
+    return offsets, indices, cached_offsets, cached_indices
 
 def grouped_collate_fn(datas):
 
@@ -149,6 +170,9 @@ def grouped_collate_fn(datas):
     intra_group_indices = datas[0]["intra_group_indices"]
     inter_group_offsets = datas[0]["inter_group_offsets"]
     inter_group_indices = datas[0]["inter_group_indices"]
+
+    cached_offsets = datas[0]["cached_offsets"]
+    cached_indices = datas[0]["cached_indices"]
     
     for data in datas[1:]:
         temp_offsets = data["intra_group_offsets"] + intra_group_offsets[-1]
@@ -158,13 +182,18 @@ def grouped_collate_fn(datas):
         inter_group_idx = data["inter_group_offsets"][1] - data["inter_group_offsets"][0] + inter_group_offsets[-1]
         inter_group_offsets = torch.cat((inter_group_offsets, torch.tensor([inter_group_idx], dtype=torch.long)))
         inter_group_indices = torch.cat((inter_group_indices, data["inter_group_indices"]))
+        
+        cached_offset_idx = data["cached_offsets"][1] - data["cached_offsets"][0] + cached_offsets[-1]
+        cached_offsets = torch.cat((cached_offsets, torch.tensor([cached_offset_idx], dtype=torch.long)))
+        cached_indices = torch.cat((cached_indices, data["cached_indices"]))
 
-    return intra_group_offsets, intra_group_indices, inter_group_offsets, inter_group_indices    
+    return intra_group_offsets, intra_group_indices, inter_group_offsets, inter_group_indices, cached_offsets, cached_indices
 
 class RecDataset(Dataset):
-    def __init__(self, offsets, indices, args):
+    def __init__(self, offsets, indices, cache, args):
         self.offsets = offsets
         self.indices = indices
+        self.cache = cache
         self.grouping = False
         
         if args.grouping:
@@ -177,9 +206,16 @@ class RecDataset(Dataset):
     def __getitem__(self, idx):
         
         indices = self.indices[self.offsets[idx] : self.offsets[idx+1]]
+        cached_indices = indices[torch.isin(indices, self.cache)]
+        cached_offsets = torch.tensor([0, len(cached_indices)])
+        
+        instance = dict()
+        instance["cached_offsets"] = cached_offsets
+        instance["cached_indices"] = cached_indices
+        
+        indices = indices[~torch.isin(indices, self.cache)]
         offsets = torch.tensor([0, len(indices)])
 
-        instance = dict()
         if self.grouping:
             group_idx = indices // self.group_size
             

@@ -11,6 +11,7 @@ import numpy as np
 import torch
 import grt_embeddings_forward
 import torch.nn as nn
+import time
 
 class GRTEmbeddingBag(nn.Module):
     __constants__ = ["num_rows, emb_dims, tt_shapes, tt_ranks"]
@@ -19,6 +20,7 @@ class GRTEmbeddingBag(nn.Module):
         self,
         args,
         num_rows: int,
+        num_cache: int,
         emb_dims: int,
         tt_ranks: List[int],
         row_shapes: Optional[List[int]] = None,
@@ -44,6 +46,10 @@ class GRTEmbeddingBag(nn.Module):
 
         self.create_tt_idx_shape()
         self.create_tt_params(weight_dist)
+
+        self.cache_emb = nn.EmbeddingBag(num_embeddings=num_cache,
+                                         embedding_dim=emb_dims,
+                                         include_last_offset=True)
 
     def check_config_is_available(self):
         
@@ -137,13 +143,15 @@ class GRTEmbeddingBag(nn.Module):
                 W = W.repeat(1, core_shape[1]).type(dtype=torch.float32)
                 self.tt_cores[i].data = W.clone().detach().requires_grad_(True)
                 
-    def forward(self, indices: Tuple, offsets: Tuple) -> torch.Tensor:
+    def forward(self, indices: Tuple, offsets: Tuple, cached_indices: torch.Tensor, cached_offsets: torch.Tensor) -> torch.Tensor:
         if self.grouping:
             intra_group_indices, inter_group_indices = indices
             intra_group_offsets, inter_group_offsets = offsets
             num_group_bags = inter_group_indices.numel()
             num_bags = inter_group_offsets.numel() - 1
             num_indices = intra_group_indices.numel()
+
+            output = self.cache_emb(cached_indices, cached_offsets)
             
             output = grt_embeddings_forward.grt_forward(
                 num_group_bags,
@@ -158,13 +166,21 @@ class GRTEmbeddingBag(nn.Module):
                 intra_group_offsets,
                 inter_group_indices,
                 inter_group_offsets,
-                self.tt_cores)
+                self.tt_cores,
+                output)
         else:
             indices, _ = indices
             offsets, _ = offsets
             num_bags = offsets.numel() - 1
             num_indices = indices.numel()
             
+            start = time.time() 
+            output = self.cache_emb(cached_indices, cached_offsets)
+            end = time.time() - start
+            torch.cuda.synchronize()
+            print(f"Cache Latency: {end}")
+            
+            start = time.time()
             output = grt_embeddings_forward.tt_forward(
                 num_bags,
                 self.emb_dims,
@@ -175,7 +191,10 @@ class GRTEmbeddingBag(nn.Module):
                 num_indices,
                 indices,
                 offsets,
-                self.tt_cores)
-
+                self.tt_cores,
+                output)
+            torch.cuda.synchronize()
+            end = time.time() - start
+            print(f"GRT-GnR Latency: {end}")
         return output
         

@@ -31,36 +31,32 @@ def main(args):
 
         exit()
     else:    
-        dataloader, num_items, row_shapes, emb_shapes = load_data(args)
+        dataloader, num_items, row_shapes, emb_shapes, num_cache = load_data(args)
 
-    '''
     grt_emb = GRTEmbeddingBag(args,
                               num_rows=num_items,
+                              num_cache=num_cache,
                               emb_dims=args.emb_dims,
                               tt_ranks=[32, 32],
                               row_shapes=row_shapes,
                               emb_shapes=emb_shapes).cuda()
-    '''
 
-    emb = nn.EmbeddingBag(num_embeddings=num_items,
-                          embedding_dim=args.emb_dims,
-                          mode="sum").cuda()
 
     if args.grouping:
         with torch.no_grad():
             total_time = 0
             num_tt_gather = 0
             total_intra_group_idx = 0
-            for batch_idx, (intra_group_offsets, intra_group_indices, inter_group_offsets, inter_group_indices) in enumerate(dataloader):
+            for batch_idx, (intra_group_offsets, intra_group_indices, inter_group_offsets, inter_group_indices, cached_offsets, cached_indices) in enumerate(dataloader):
+                cached_indices = cached_indices.cuda()
+                cached_offsets = cached_offsets.cuda()
                 indices = (intra_group_indices.cuda(), inter_group_indices.cuda())
                 offsets = (intra_group_offsets.cuda(), inter_group_offsets.cuda())
                 num_tt_gather += inter_group_indices.shape[0]
                 total_intra_group_idx += intra_group_indices.shape[0]
 
-                start = time.time()
-                output = grt_emb(indices, offsets)
+                output = grt_emb(indices, offsets, cached_indices, cached_offsets)
                 torch.cuda.synchronize()
-                end = time.time()
                 if (batch_idx > 9):
                     total_time += (end - start)
             print(f"Total time : {total_time/(len(dataloader)-10)}")
@@ -70,16 +66,15 @@ def main(args):
         with torch.no_grad():
             total_time = 0
             num_tt_gather = 0
-            for batch_idx, (offsets, indices) in enumerate(dataloader):
+            for batch_idx, (offsets, indices, cached_offsets, cached_indices) in enumerate(dataloader):
                 num_tt_gather += indices.shape[0]
-                #indices = (indices.cuda(), None)
-                #offsets = (offsets.cuda(), None)
-                indices = indices.cuda()
-                offsets = offsets.cuda()
+                cached_indices = cached_indices.cuda()
+                cached_offsets = cached_offsets.cuda()
+                indices = (indices.cuda(), None)
+                offsets = (offsets.cuda(), None)
 
                 start = time.time()
-                #output = grt_emb(indices, offsets)
-                output = emb(indices, offsets)
+                output = grt_emb(indices, offsets, cached_indices, cached_offsets)
                 torch.cuda.synchronize()
                 end = time.time()
                 if (batch_idx > 9):
@@ -97,11 +92,11 @@ if __name__=="__main__":
     parser.add_argument("--use-cache", type=int, default=0)
     parser.add_argument("--cache-size", type=float, default=0.01)
     parser.add_argument("--batch-size", type=int, default=2048)
-    parser.add_argument("--grouping", type=int, default=0)
+    parser.add_argument("--grouping", type=int, default=1)
     parser.add_argument("--num-cores", type=int, default=3)
     parser.add_argument("--emb-dims", type=int, default=64)
-    parser.add_argument("--use-group-alg", type=int, default=0)
-    parser.add_argument("--alg-name", type=str, default="optim", choices=["random", "sort", "optim"])
+    parser.add_argument("--use-group-alg", type=int, default=1)
+    parser.add_argument("--alg-name", type=str, default="sort", choices=["random", "sort", "optim"])
 
     args = parser.parse_args()
     args.data_path = args.path + args.data_name + ".csv"
