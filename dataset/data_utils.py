@@ -6,8 +6,14 @@ from scipy.sparse import coo_matrix, csr_matrix
 from utils.utils import factorize_shapes
 from .grouping.optimize import optim_indices
 import seaborn as sns
+import logging
+import os
+
+logger = logging.getLogger(__name__)
 
 def load_data(args):
+    
+    logger.info(f"Loading {args.data_name} Dataset")
     
     col = ['user_id', 'item_id', 'rating', 'timestamp']
     data = pd.read_csv(args.data_path, names=col)
@@ -53,7 +59,12 @@ def load_data(args):
         elif args.alg_name == "sort":
             indices = sort_indices(indices, num_items)
         elif args.alg_name == "optim":
-            indices = optim_indices(sparse_data, args.group_size, args)
+            optim_name = f"/home/sminyu/rec_sys/GRT-GnR/dataset/grouping/optim_data/{args.data_name}.npy"
+            if os.path.exists(optim_name):
+                idx = np.load(optim_name)
+                indices = optimize_indices(indices, idx)
+            else:
+                indices = optim_indices(indices, sparse_data, args.group_size, args)
 
     dataset = RecDataset(torch.tensor(offsets, dtype=torch.long), torch.tensor(indices, dtype=torch.long), args)
 
@@ -110,6 +121,14 @@ def sort_indices(indices, num_items):
     sort_indices = sort_arr[indices]
     
     return sort_indices
+
+def optimize_indices(indices, idx):
+
+    optim_arr = np.zeros_like(idx)
+    optim_arr[idx] = np.arange(idx.size)
+    optim_indices = optim_arr[indices]
+    
+    return optim_indices
 
 def collate_fn(datas):
     offsets = datas[0]["offsets"]
