@@ -9,6 +9,7 @@ from .grouping.optimize import optim_indices
 import seaborn as sns
 import logging
 import os
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,7 @@ def load_data(args):
     data_path = f"/home/sminyu/rec_sys/saved_data/{args.data_name}/sparse_data.npz"
     if os.path.exists(data_path):
         sparse_data = sp.load_npz(data_path)
+        num_items = sparse_data.shape[1]
     else:
         logger.info(f"Loading {args.data_name} Dataset")
         
@@ -42,21 +44,22 @@ def load_data(args):
         data = data.drop_duplicates()
         data = data.sort_values(by='user_id', ascending=True)
         
-        row_shapes = factorize_shapes(n=num_items, d=3)
-        emb_shapes = factorize_shapes(n=args.emb_dims, d=3)
-        args.group_size = row_shapes[-1]
-
         row = data.user_id.values
         col = data.item_id.values
         val = data.rating.values
         
         sparse_data = coo_matrix((val, (row, col)), shape=(num_users, num_items)).tocsr()
         sp.save_npz(f"/home/sminyu/rec_sys/saved_data/{args.data_name}/sparse_data.npz", sparse_data)
+
+    logger.info(f"Finish Loading {args.data_name} Dataset")
+    row_shapes = factorize_shapes(n=num_items, d=3)
+    emb_shapes = factorize_shapes(n=args.emb_dims, d=3)
+    args.group_size = row_shapes[-1]
     
     if args.use_cache:
         cache_size = int(args.cache_size * num_items * 0.01)
-        saved_data_path = f"/home/sminyu/rec_sys/saved_data/use_cache_{args.cache_size}_sparse_data.npz"
-        saved_cache_path = f"/home/sminyu/rec_sys/saved_data/use_cache_{args.cache_size}_sparse_cache.npz"
+        saved_data_path = f"/home/sminyu/rec_sys/saved_data/{args.data_name}/use_cache_{args.cache_size}_sparse_data.npz"
+        saved_cache_path = f"/home/sminyu/rec_sys/saved_data/{args.data_name}/use_cache_{args.cache_size}_sparse_cache.npz"
         if os.path.exists(saved_cache_path) and os.path.exists(saved_data_path):
             sparse_data = sp.load_npz(saved_data_path)
             sparse_cache = sp.load_npz(saved_cache_path)
@@ -116,8 +119,8 @@ def gen_cache(sparse_data, cache_size, args):
         sparse_data[:, cached_item_idx[i]] = 0
     sparse_data = sparse_data.tocsr()
 
-    sp.save_npz(f"/home/sminyu/rec_sys/saved_data/use_cache_{args.cache_size}_sparse_data.npz", sparse_data)
-    sp.save_npz(f"/home/sminyu/rec_sys/saved_data/use_cache_{args.cache_size}_sparse_cache.npz", sparse_cache)
+    sp.save_npz(f"/home/sminyu/rec_sys/saved_data/{args.data_name}/use_cache_{args.cache_size}_sparse_data.npz", sparse_data)
+    sp.save_npz(f"/home/sminyu/rec_sys/saved_data/{args.data_name}/use_cache_{args.cache_size}_sparse_cache.npz", sparse_cache)
 
     logger.info("Finished Generating Cache Data")
     return sparse_cache.tocsr(), sparse_data
