@@ -26,6 +26,7 @@ class GRTEmbeddingBag(nn.Module):
         row_shapes: Optional[List[int]] = None,
         emb_shapes: Optional[List[int]] = None,
         weight_dist: str = "approx-normal",
+        use_cache: bool = False,
     ) -> None:
         super(GRTEmbeddingBag, self).__init__()
         
@@ -34,6 +35,12 @@ class GRTEmbeddingBag(nn.Module):
         self.tt_ranks = [1] + tt_ranks + [1]
         self.row_shapes = row_shapes
         self.emb_shapes = emb_shapes
+        self.use_cache = use_cache
+        
+        if self.use_cache:
+            self.cache_emb = nn.EmbeddingBag(num_embeddings=num_cache,
+                                             embedding_dim=emb_dims,
+                                             include_last_offset=True)
         
         self.check_config_is_available()
         
@@ -46,10 +53,6 @@ class GRTEmbeddingBag(nn.Module):
 
         self.create_tt_idx_shape()
         self.create_tt_params(weight_dist)
-
-        self.cache_emb = nn.EmbeddingBag(num_embeddings=num_cache,
-                                         embedding_dim=emb_dims,
-                                         include_last_offset=True)
 
     def check_config_is_available(self):
         
@@ -144,15 +147,19 @@ class GRTEmbeddingBag(nn.Module):
                 self.tt_cores[i].data = W.clone().detach().requires_grad_(True)
                 
     def forward(self, indices: Tuple, offsets: Tuple, cached_indices: torch.Tensor, cached_offsets: torch.Tensor) -> torch.Tensor:
+        if self.use_cache:
+            output = self.cache_emb(cached_indices, cached_offsets)
+
         if self.grouping:
             intra_group_indices, inter_group_indices = indices
             intra_group_offsets, inter_group_offsets = offsets
             num_group_bags = inter_group_indices.numel()
             num_bags = inter_group_offsets.numel() - 1
             num_indices = intra_group_indices.numel()
-
-            output = self.cache_emb(cached_indices, cached_offsets)
             
+            if not self.use_cache:
+                output = torch.zeros([num_bags, self.emb_dims], device=self.tt_cores[0].device, dtype=self.tt_cores[0].dtype)
+           
             output = grt_embeddings_forward.grt_forward(
                 num_group_bags,
                 num_bags,
@@ -173,14 +180,10 @@ class GRTEmbeddingBag(nn.Module):
             offsets, _ = offsets
             num_bags = offsets.numel() - 1
             num_indices = indices.numel()
+
+            if not self.use_cache:
+                output = torch.zeros([num_bags, self.emb_dims], device=self.tt_cores[0].device, dtype=self.tt_cores[0].dtype)
             
-            start = time.time() 
-            output = self.cache_emb(cached_indices, cached_offsets)
-            end = time.time() - start
-            torch.cuda.synchronize()
-            print(f"Cache Latency: {end}")
-            
-            start = time.time()
             output = grt_embeddings_forward.tt_forward(
                 num_bags,
                 self.emb_dims,
@@ -193,8 +196,5 @@ class GRTEmbeddingBag(nn.Module):
                 offsets,
                 self.tt_cores,
                 output)
-            torch.cuda.synchronize()
-            end = time.time() - start
-            print(f"GRT-GnR Latency: {end}")
         return output
         
